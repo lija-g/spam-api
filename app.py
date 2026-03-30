@@ -47,7 +47,7 @@ def get_model(name, path):
 # Prediction Logic
 # -------------------------------
 def classify(text, tokenizer, model):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512 )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -222,12 +222,15 @@ def build_enron_dataset(sample_size=200):
     return pd.DataFrame(data)
 
 def build_full_text(row):
-    return f"""
-    From: {row.get('from', '')}
-    Subject: {row.get('subject', '')}
-    Body: {row.get('text', '')}
-    """
+    subject = str(row.get("subject", ""))[:200]
+    sender = str(row.get("from", ""))[:100]
+    body = str(row.get("text", ""))[:1000]  # limit body
 
+    return f"""
+    From: {sender}
+    Subject: {subject}
+    Body: {body}
+    """
 # -------------------------------
 # Routes
 # -------------------------------
@@ -294,7 +297,7 @@ def benchmark(
 
     return response
 
-    
+
 @app.get("/benchmark/enron-auto")
 def benchmark_enron_auto(
     sample_size: int = Query(200),
