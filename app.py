@@ -1,6 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+import pandas as pd
+import os
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 app = FastAPI()
 
@@ -10,17 +13,20 @@ app = FastAPI()
 MODELS = {
     "distilbert": "distilbert-base-uncased",
     "bert_base": "AventIQ-AI/bert-spam-detection",
-     "moe_bert": "AntiSpamInstitute/spam-detector-bert-MoE-v2.2"
-    # ⚠️ Avoid MoE in production unless you have high GPU memory
+    "moe_bert": "AntiSpamInstitute/spam-detector-bert-MoE-v2.2"
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Lazy-loaded models
+# Dataset config (can override in TrueFoundry ENV)
+DATA_PATH = os.getenv("DATA_PATH", "spam_data.csv")
+DATA_URL = os.getenv("DATA_URL", "")  # Google Sheet / S3 link
+
+# Lazy-loaded models cache
 loaded_models = {}
 
 # -------------------------------
-# Model Loader (Lazy Loading)
+# Model Loader
 # -------------------------------
 def get_model(name, path):
     if name not in loaded_models:
@@ -54,14 +60,58 @@ def classify(text, tokenizer, model):
     }
 
 # -------------------------------
-# Ensemble Logic (Majority Vote)
+# Ensemble Logic
 # -------------------------------
 def ensemble(results):
     votes = [r["label"] for r in results.values()]
+    return "spam" if votes.count("spam") > len(votes) / 2 else "not spam"
 
-    if votes.count("spam") > len(votes) / 2:
-        return "spam"
-    return "not spam"
+# -------------------------------
+# Dataset Loaders
+# -------------------------------
+def load_from_csv(path):
+    df = pd.read_csv(path)
+    return df
+
+def load_from_url(url):
+    df = pd.read_csv(url)
+    return df
+
+def get_dataset(source="file"):
+    if source == "sheet" and DATA_URL:
+        return load_from_url(DATA_URL)
+    return load_from_csv(DATA_PATH)
+
+# -------------------------------
+# Evaluation Logic
+# -------------------------------
+def evaluate_dataset(df):
+    results_summary = {}
+
+    for name, model_path in MODELS.items():
+        tokenizer, model = get_model(name, model_path)
+
+        y_true = []
+        y_pred = []
+
+        for _, row in df.iterrows():
+            text = str(row["text"])
+            true_label = int(row["label"])
+
+            pred = classify(text, tokenizer, model)["label"]
+            pred_label = 1 if pred == "spam" else 0
+
+            y_true.append(true_label)
+            y_pred.append(pred_label)
+
+        results_summary[name] = {
+            "accuracy": round(accuracy_score(y_true, y_pred), 4),
+            "precision": round(precision_score(y_true, y_pred), 4),
+            "recall": round(recall_score(y_true, y_pred), 4),
+            "f1": round(f1_score(y_true, y_pred), 4),
+        }
+
+    return results_summary
 
 # -------------------------------
 # Routes
@@ -88,50 +138,25 @@ def predict(data: dict):
     }
 
 # -------------------------------
-# Benchmark Dataset (Small Demo)
-# -------------------------------
-test_data = [
-    {"text": "Win a free iPhone now!!!", "label": 1},
-    {"text": "Congratulations! You won a lottery", "label": 1},
-    {"text": "Let's have a meeting tomorrow", "label": 0},
-    {"text": "Please review the attached document", "label": 0},
-    {"text": "Claim your free prize now", "label": 1},
-    {"text": "Project deadline is next week", "label": 0},
-]
-
-# -------------------------------
-# Benchmark Logic
-# -------------------------------
-def evaluate():
-    scores = {}
-
-    for name, path in MODELS.items():
-        tokenizer, model = get_model(name, path)
-
-        correct = 0
-
-        for item in test_data:
-            pred = classify(item["text"], tokenizer, model)["label"]
-            true_label = "spam" if item["label"] == 1 else "not spam"
-
-            if pred == true_label:
-                correct += 1
-
-        accuracy = correct / len(test_data)
-        scores[name] = round(accuracy, 4)
-
-    return scores
-
-# -------------------------------
-# Benchmark Endpoint (SAFE)
+# Benchmark Endpoint
 # -------------------------------
 @app.get("/benchmark")
-def benchmark():
-    scores = evaluate()
-    best_model = max(scores, key=scores.get)
+def benchmark(source: str = Query("file", enum=["file", "sheet"])):
+    """
+    source:
+    - file  → local CSV
+    - sheet → Google Sheet / S3 URL
+    """
+    df = get_dataset(source)
+
+    scores = evaluate_dataset(df)
+
+    # pick best model based on F1
+    best_model = max(scores, key=lambda x: scores[x]["f1"])
 
     return {
-        "accuracy": scores,
+        "dataset_size": len(df),
+        "metrics": scores,
         "best_model": best_model,
-        "note": "Use larger dataset for real accuracy"
+        "note": "F1 score used for best model selection"
     }
