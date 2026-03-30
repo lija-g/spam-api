@@ -4,29 +4,38 @@ import torch
 
 app = FastAPI()
 
-# Models
+# -------------------------------
+# Config
+# -------------------------------
 MODELS = {
+    "distilbert": "mrm8488/distilbert-base-uncased-finetuned-sms-spam-detection",
     "bert_base": "AventIQ-AI/bert-spam-detection",
-    "moe_bert": "AntiSpamInstitute/spam-detector-bert-MoE-v2.2",
-    "distilbert": "mrm8488/distilbert-base-uncased-finetuned-sms-spam-detection"
+     "moe_bert": "AntiSpamInstitute/spam-detector-bert-MoE-v2.2"
+    # ⚠️ Avoid MoE in production unless you have high GPU memory
 }
 
-# Device
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Load all models
+# Lazy-loaded models
 loaded_models = {}
 
-for name, path in MODELS.items():
-    tokenizer = AutoTokenizer.from_pretrained(path)
-    model = AutoModelForSequenceClassification.from_pretrained(path)
-    model.to(device)
-    model.eval()
-    loaded_models[name] = (tokenizer, model)
+# -------------------------------
+# Model Loader (Lazy Loading)
+# -------------------------------
+def get_model(name, path):
+    if name not in loaded_models:
+        tokenizer = AutoTokenizer.from_pretrained(path)
+        model = AutoModelForSequenceClassification.from_pretrained(path)
 
+        model.to(device)
+        model.eval()
+
+        loaded_models[name] = (tokenizer, model)
+
+    return loaded_models[name]
 
 # -------------------------------
-# Prediction function
+# Prediction Logic
 # -------------------------------
 def classify(text, tokenizer, model):
     inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
@@ -44,33 +53,31 @@ def classify(text, tokenizer, model):
         "confidence": round(confidence, 4)
     }
 
-
 # -------------------------------
-# Ensemble logic
+# Ensemble Logic (Majority Vote)
 # -------------------------------
 def ensemble(results):
-    # majority voting
     votes = [r["label"] for r in results.values()]
+
     if votes.count("spam") > len(votes) / 2:
         return "spam"
     return "not spam"
 
-
 # -------------------------------
-# API Routes
+# Routes
 # -------------------------------
 @app.get("/")
 def home():
     return {"status": "running"}
 
-
 @app.post("/predict")
 def predict(data: dict):
-    text = data["text"]
+    text = data.get("text", "")
 
     results = {}
 
-    for name, (tokenizer, model) in loaded_models.items():
+    for name, path in MODELS.items():
+        tokenizer, model = get_model(name, path)
         results[name] = classify(text, tokenizer, model)
 
     final_label = ensemble(results)
@@ -80,9 +87,8 @@ def predict(data: dict):
         "models": results
     }
 
-
 # -------------------------------
-# Benchmark Dataset
+# Benchmark Dataset (Small Demo)
 # -------------------------------
 test_data = [
     {"text": "Win a free iPhone now!!!", "label": 1},
@@ -93,14 +99,15 @@ test_data = [
     {"text": "Project deadline is next week", "label": 0},
 ]
 
-
 # -------------------------------
-# Benchmark Function
+# Benchmark Logic
 # -------------------------------
 def evaluate():
     scores = {}
 
-    for name, (tokenizer, model) in loaded_models.items():
+    for name, path in MODELS.items():
+        tokenizer, model = get_model(name, path)
+
         correct = 0
 
         for item in test_data:
@@ -115,18 +122,16 @@ def evaluate():
 
     return scores
 
-
 # -------------------------------
-# Benchmark API
+# Benchmark Endpoint (SAFE)
 # -------------------------------
 @app.get("/benchmark")
 def benchmark():
     scores = evaluate()
-
-    # find best model
     best_model = max(scores, key=scores.get)
 
     return {
         "accuracy": scores,
-        "best_model": best_model
+        "best_model": best_model,
+        "note": "Use larger dataset for real accuracy"
     }
