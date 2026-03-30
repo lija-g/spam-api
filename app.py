@@ -18,11 +18,9 @@ MODELS = {
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Dataset config (can override in TrueFoundry ENV)
 DATA_PATH = os.getenv("DATA_PATH", "spam_data.csv")
-DATA_URL = os.getenv("DATA_URL", "")  # Google Sheet / S3 link
+DATA_URL = os.getenv("DATA_URL", "")
 
-# Lazy-loaded models cache
 loaded_models = {}
 
 # -------------------------------
@@ -70,12 +68,10 @@ def ensemble(results):
 # Dataset Loaders
 # -------------------------------
 def load_from_csv(path):
-    df = pd.read_csv(path)
-    return df
+    return pd.read_csv(path)
 
 def load_from_url(url):
-    df = pd.read_csv(url)
-    return df
+    return pd.read_csv(url)
 
 def get_dataset(source="file"):
     if source == "sheet" and DATA_URL:
@@ -83,7 +79,7 @@ def get_dataset(source="file"):
     return load_from_csv(DATA_PATH)
 
 # -------------------------------
-# Evaluation Logic
+# Evaluation (Summary Metrics)
 # -------------------------------
 def evaluate_dataset(df):
     results_summary = {}
@@ -91,8 +87,7 @@ def evaluate_dataset(df):
     for name, model_path in MODELS.items():
         tokenizer, model = get_model(name, model_path)
 
-        y_true = []
-        y_pred = []
+        y_true, y_pred = [], []
 
         for _, row in df.iterrows():
             text = str(row["text"])
@@ -112,6 +107,40 @@ def evaluate_dataset(df):
         }
 
     return results_summary
+
+# -------------------------------
+# Evaluation (Detailed Per Row)
+# -------------------------------
+def evaluate_detailed(df):
+    detailed_results = []
+
+    for _, row in df.iterrows():
+        text = str(row["text"])
+        true_label = "spam" if int(row["label"]) == 1 else "not spam"
+
+        model_outputs = {}
+
+        for name, path in MODELS.items():
+            tokenizer, model = get_model(name, path)
+            pred = classify(text, tokenizer, model)
+
+            model_outputs[name] = {
+                **pred,
+                "correct": pred["label"] == true_label
+            }
+
+        # Ensemble prediction
+        ensemble_pred = ensemble(model_outputs)
+
+        detailed_results.append({
+            "text": text,
+            "true_label": true_label,
+            "ensemble_prediction": ensemble_pred,
+            "ensemble_correct": ensemble_pred == true_label,
+            "models": model_outputs
+        })
+
+    return detailed_results
 
 # -------------------------------
 # Routes
@@ -138,25 +167,43 @@ def predict(data: dict):
     }
 
 # -------------------------------
-# Benchmark Endpoint
+# Combined Benchmark Endpoint
 # -------------------------------
 @app.get("/benchmark")
-def benchmark(source: str = Query("file", enum=["file", "sheet"])):
+def benchmark(
+    source: str = Query("file", enum=["file", "sheet"]),
+    detailed: bool = Query(False),
+    limit: int = Query(None)
+):
     """
     source:
-    - file  → local CSV
-    - sheet → Google Sheet / S3 URL
+      - file  → local CSV
+      - sheet → Google Sheet / S3 URL
+
+    detailed:
+      - true → include per-row predictions
+
+    limit:
+      - limit number of rows (for speed)
     """
+
     df = get_dataset(source)
 
-    scores = evaluate_dataset(df)
+    if limit:
+        df = df.head(limit)
 
-    # pick best model based on F1
+    # Summary metrics
+    scores = evaluate_dataset(df)
     best_model = max(scores, key=lambda x: scores[x]["f1"])
 
-    return {
+    response = {
         "dataset_size": len(df),
         "metrics": scores,
-        "best_model": best_model,
-        "note": "F1 score used for best model selection"
+        "best_model": best_model
     }
+
+    # Add detailed results if requested
+    if detailed:
+        response["detailed_results"] = evaluate_detailed(df)
+
+    return response
