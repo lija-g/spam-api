@@ -5,3 +5,4 @@ transformers
 pandas
 scikit-learn
 python-multipart
+requests

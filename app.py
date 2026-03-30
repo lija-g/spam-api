@@ -4,6 +4,11 @@ import torch
 import pandas as pd
 import os
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import tarfile
+import requests
+import random
+from email import policy
+from email.parser import BytesParser
 
 app = FastAPI()
 
@@ -90,7 +95,7 @@ def evaluate_dataset(df):
         y_true, y_pred = [], []
 
         for _, row in df.iterrows():
-            text = str(row["text"])
+            text = build_full_text(row)
             true_label = int(row["label"])
 
             pred = classify(text, tokenizer, model)["label"]
@@ -115,7 +120,7 @@ def evaluate_detailed(df):
     detailed_results = []
 
     for _, row in df.iterrows():
-        text = str(row["text"])
+        text = build_full_text(row)
         true_label = "spam" if int(row["label"]) == 1 else "not spam"
 
         model_outputs = {}
@@ -141,6 +146,87 @@ def evaluate_detailed(df):
         })
 
     return detailed_results
+
+ENRON_URL = "https://www.cs.cmu.edu/~enron/enron_mail_20150507.tar.gz"
+ENRON_DIR = "./enron_data"
+
+def download_enron():
+    os.makedirs(ENRON_DIR, exist_ok=True)
+
+    tar_path = os.path.join(ENRON_DIR, "enron.tar.gz")
+
+    # Download
+    if not os.path.exists(tar_path):
+        print("Downloading Enron dataset...")
+        r = requests.get(ENRON_URL, stream=True)
+        with open(tar_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024):
+                f.write(chunk)
+
+    # Extract
+    extract_path = os.path.join(ENRON_DIR, "maildir")
+
+    if not os.path.exists(extract_path):
+        print("Extracting Enron dataset...")
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(path=ENRON_DIR)
+
+    return extract_path
+
+def parse_email(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            msg = BytesParser(policy=policy.default).parse(f)
+
+        body = ""
+        if msg.get_body():
+            body = msg.get_body(preferencelist=('plain', 'html')).get_content()
+
+        return {
+            "from": str(msg["from"] or ""),
+            "subject": str(msg["subject"] or ""),
+            "text": body
+        }
+    except:
+        return None
+
+def build_enron_dataset(sample_size=200):
+    base_path = download_enron()
+
+    file_paths = []
+
+    for root, _, files in os.walk(base_path):
+        for file in files:
+            file_paths.append(os.path.join(root, file))
+
+    sampled_files = random.sample(file_paths, min(sample_size, len(file_paths)))
+
+    data = []
+
+    for path in sampled_files:
+        email_data = parse_email(path)
+
+        if email_data:
+            text_lower = email_data["text"].lower()
+
+            # ⚠️ heuristic labeling (not perfect)
+            label = 1 if any(word in text_lower for word in ["free", "win", "money", "offer"]) else 0
+
+            data.append({
+                "from": email_data["from"],
+                "subject": email_data["subject"],
+                "text": email_data["text"],
+                "label": label
+            })
+
+    return pd.DataFrame(data)
+
+def build_full_text(row):
+    return f"""
+    From: {row.get('from', '')}
+    Subject: {row.get('subject', '')}
+    Body: {row.get('text', '')}
+    """
 
 # -------------------------------
 # Routes
@@ -203,6 +289,34 @@ def benchmark(
     }
 
     # Add detailed results if requested
+    if detailed:
+        response["detailed_results"] = evaluate_detailed(df)
+
+    return response
+
+    
+@app.get("/benchmark/enron-auto")
+def benchmark_enron_auto(
+    sample_size: int = Query(200),
+    detailed: bool = Query(True)
+):
+    """
+    Auto-download + benchmark Enron dataset
+    """
+
+    df = build_enron_dataset(sample_size=sample_size)
+
+    scores = evaluate_dataset(df)
+    best_model = max(scores, key=lambda x: scores[x]["f1"])
+
+    response = {
+        "dataset": "Enron Auto (heuristic labels)",
+        "dataset_size": len(df),
+        "metrics": scores,
+        "best_model": best_model,
+        "note": "Labels are heuristic (approximate accuracy)"
+    }
+
     if detailed:
         response["detailed_results"] = evaluate_detailed(df)
 
