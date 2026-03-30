@@ -47,7 +47,17 @@ def get_model(name, path):
 # Prediction Logic
 # -------------------------------
 def classify(text, tokenizer, model):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True, max_length=512 )
+    if not text or not isinstance(text, str):
+        return {"label": "not spam", "confidence": 0.0}
+
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=512
+    )
+
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -86,10 +96,10 @@ def get_dataset(source="file"):
 # -------------------------------
 # Evaluation (Summary Metrics)
 # -------------------------------
-def evaluate_dataset(df):
+def evaluate_dataset(df, models=MODELS):
     results_summary = {}
 
-    for name, model_path in MODELS.items():
+    for name, model_path in models.items():
         tokenizer, model = get_model(name, model_path)
 
         y_true, y_pred = [], []
@@ -98,7 +108,11 @@ def evaluate_dataset(df):
             text = build_full_text(row)
             true_label = int(row["label"])
 
-            pred = classify(text, tokenizer, model)["label"]
+            try:
+                pred = classify(text, tokenizer, model)["label"]
+            except Exception as e:
+                pred = "not spam"    
+
             pred_label = 1 if pred == "spam" else 0
 
             y_true.append(true_label)
@@ -179,16 +193,27 @@ def parse_email(file_path):
             msg = BytesParser(policy=policy.default).parse(f)
 
         body = ""
-        if msg.get_body():
-            body = msg.get_body(preferencelist=('plain', 'html')).get_content()
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_payload(decode=True)
+                    if body:
+                        body = body.decode(errors="ignore")
+                        break
+        else:
+            body = msg.get_payload(decode=True)
+            if body:
+                body = body.decode(errors="ignore")
 
         return {
-            "from": str(msg["from"] or ""),
-            "subject": str(msg["subject"] or ""),
-            "text": body
+            "from": str(msg.get("from", "")),
+            "subject": str(msg.get("subject", "")),
+            "text": body if body else ""
         }
-    except:
-        return None
+
+    except Exception as e:
+        return None  # skip bad emails
 
 def build_enron_dataset(sample_size=200):
     base_path = download_enron()
@@ -206,7 +231,7 @@ def build_enron_dataset(sample_size=200):
     for path in sampled_files:
         email_data = parse_email(path)
 
-        if email_data:
+        if email_data and len(email_data["text"]) > 20::
             text_lower = email_data["text"].lower()
 
             # ⚠️ heuristic labeling (not perfect)
@@ -309,7 +334,7 @@ def benchmark_enron_auto(
 
     df = build_enron_dataset(sample_size=sample_size)
 
-    scores = evaluate_dataset(df)
+    scores = evaluate_dataset(df, models={ "bert_base": "AventIQ-AI/bert-spam-detection"})
     best_model = max(scores, key=lambda x: scores[x]["f1"])
 
     response = {
