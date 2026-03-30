@@ -8,7 +8,7 @@ app = FastAPI()
 # Config
 # -------------------------------
 MODELS = {
-    "distilbert": "mrm8488/distilbert-base-uncased-finetuned-sms-spam-detection",
+    "distilbert": "distilbert-base-uncased",
     "bert_base": "AventIQ-AI/bert-spam-detection",
      "moe_bert": "AntiSpamInstitute/spam-detector-bert-MoE-v2.2"
     # ⚠️ Avoid MoE in production unless you have high GPU memory
