@@ -1,4 +1,7 @@
 fastapi
 uvicorn
-transformers
 torch
+transformers
+pandas
+scikit-learn
+python-multipart
