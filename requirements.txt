@@ -6,3 +6,5 @@ pandas
 scikit-learn
 python-multipart
 requests
+openai
+pydantic
