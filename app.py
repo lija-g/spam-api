@@ -231,7 +231,7 @@ def build_enron_dataset(sample_size=200):
     for path in sampled_files:
         email_data = parse_email(path)
 
-        if email_data and len(email_data["text"]) > 20::
+        if email_data and len(email_data["text"]) > 20:
             text_lower = email_data["text"].lower()
 
             # ⚠️ heuristic labeling (not perfect)
